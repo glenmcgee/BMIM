@@ -1,0 +1,292 @@
+---
+title: "NHANES Analysis"
+author: "Glen McGee"
+date: "10/11/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+R <- 150000            ## no. of iterations
+burn <- 0.5           ## percent burn-in
+thin <- 40            ## thinning number
+sel <- seq(burn*R+1,R,by=thin) 
+
+### load libraries
+library(bsmim2)
+library(BSMIM)
+library(bkmr)
+library(GIGrvg)
+library(refund)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(splines)
+library(MASS)
+library(patchwork)
+library(ghibli)
+library(ggthemes)
+library(kableExtra)
+library(xtable)
+
+path="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/Analysis/"
+
+#loads an RData file, and returns it with new name
+loadRData <- function(fileName){
+    load(fileName)
+    get(ls()[ls() != "fileName"])
+}
+
+
+printCI <- function(df,col1,col2,dig=2){
+  
+  CI <- paste0("(",round(df[,col1],dig),", ",round(df[,col2],dig),")")
+  res <- CI
+  if(col1>1){
+    res <- cbind(df[1:(col1-1)],CI)
+  }
+  if(col2<ncol(df)){
+    res <- cbind(res,df[(col2+1):ncol(df)])
+  }
+  return(res)
+}
+
+getqgcWeights <- function(obj,nexp=8){
+  coefs <- obj$fit$coef[1+(1:nexp)] #exclude intercept
+  pos.weights <- coefs/sum(coefs[coefs>=0])
+  neg.weights <- coefs/sum(coefs[coefs<0])
+  weights <- cbind(pos.weights,neg.weights)
+  weights[coefs<0,1] <- NA
+  weights[coefs>=0,2] <- NA
+  return(weights)
+}
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r loaddat18, echo=FALSE, fig.height=9, fig.width=9, warning=FALSE}
+
+suffix="analysis"
+chain=1
+mod_names=c("qgcomp","qgcomp2","SIMlinear","SIM","SIMinvunif","bsmim","bsmiminvunif","bkmr","bkmrinvunif","km","kmhier","SIMlinearquant")
+mods <- list()
+for(mm in 1:length(mod_names)){
+  mods[[mm]] <- loadRData(paste0(path,mod_names[mm],"_list_",suffix,chain,".RData"))
+}
+names(mods) <- mod_names
+
+CVmods <- list()
+for(mm in 1:length(mod_names)){
+  CVmods[[mm]] <- list()
+  for(vv in 1:5){
+    CVmods[[mm]][[vv]] <- loadRData(paste0(path,mod_names[mm],"_list_",suffix,"_CV",vv,".RData"))
+  }
+}
+names(CVmods) <- mod_names
+
+```
+
+
+```{r exp18, echo=FALSE, fig.height=9, fig.width=9, warning=FALSE}
+
+weights_qgcomp <- round(getqgcWeights(mods$qgcomp$fit,18),2)
+weights_SIMlinearquant <- summarize_thetas(mods$SIMlinearquant$fit)[[1]]
+weights_SIMlinearquant <- printCI(round(weights_SIMlinearquant,2),4,5)
+weights_SIMlinear <- summarize_thetas(mods$SIMlinear$fit)[[1]]
+weights_SIMlinear <- printCI(round(weights_SIMlinear,2),4,5)
+weights_SIM <- summarize_thetas(mods$SIM$fit)[[1]]
+weights_SIM <- printCI(round(weights_SIM,2),4,5)
+weights_SIMinvunif <- summarize_thetas(mods$SIMinvunif$fit)[[1]]
+weights_SIMinvunif <- printCI(round(weights_SIMinvunif,2),4,5)
+weights_bsmim <- rbind(summarize_thetas(mods$bsmim$fit)[[1]],summarize_thetas(mods$bsmim$fit)[[2]],summarize_thetas(mods$bsmim$fit)[[3]])
+weights_bsmim <- printCI(round(weights_bsmim,2),4,5)
+weights_bsmiminvunif <- rbind(summarize_thetas(mods$bsmiminvunif$fit)[[1]],summarize_thetas(mods$bsmiminvunif$fit)[[2]],summarize_thetas(mods$bsmiminvunif$fit)[[3]])
+weights_bsmiminvunif <- printCI(round(weights_bsmiminvunif,2),4,5)
+weights_bkmr <- round(1-apply(mods$bkmr$fit$rho,2,function(x) mean(x==0)),2)
+weights_bkmrinvunif <- round(1-apply(mods$bkmrinvunif$fit$rho,2,function(x) mean(x==0)),2)
+weights_km <- round(ExtractPIPs(mods$km$fit,sel=sel)[,-1],2)
+weights_kmhier <- round(ExtractPIPs(mods$kmhier$fit,sel=sel)[,-(1:2)],2)
+
+weights <- cbind(weights_qgcomp,weights_km,weights_SIM,weights_bsmim) # 
+weights_invunif <- cbind(weights_qgcomp,weights_km,weights_SIMinvunif,weights_bsmiminvunif) # 
+weights_alt <- cbind(weights_SIMlinearquant,weights_SIMlinear,weights_SIMinvunif,weights_bsmiminvunif,weights_bkmrinvunif,weights_kmhier) 
+
+row.names(weights) <- row.names(weights_alt) <- ExtractPIPs(mods$km$fit)[,1]
+
+kable(weights,caption="Exposure Weights" ,booktabs = T)
+kable(weights_alt,caption="Exposure Weights--Other results" ,booktabs = T)
+
+print(xtable(weights))
+
+print(xtable(weights_alt))
+```
+
+
+```{r overall, echo=FALSE, fig.height=9, fig.width=9, warning=FALSE}
+overall_qgcomp <- mods$qgcomp$pred_overall
+overall_qgcomp2 <- mods$qgcomp2$pred_overall
+overall_SIMlinear <- mods$SIMlinear$pred_overall$contrasts[12,]
+overall_SIM <- mods$SIM$pred_overall$contrasts[12,]
+overall_SIMinvunif <- mods$SIMinvunif$pred_overall$contrasts[12,]
+overall_bsmim <- mods$bsmim$pred_overall$contrasts[12,]
+overall_bsmiminvunif <- mods$bsmiminvunif$pred_overall$contrasts[12,]
+overall_bkmr <- mods$bkmr$pred_overall$contrasts[12,]
+overall_bkmrinvunif <- mods$bkmrinvunif$pred_overall$contrasts[12,]
+overall_km <- mods$km$pred_overall[12,]
+overall_kmhier <- mods$kmhier$pred_overall[12,]
+
+overall <- rbind(overall_qgcomp,
+                 overall_qgcomp2,
+                 overall_SIMlinear,
+                 overall_SIM,
+                 overall_SIMinvunif,
+                 overall_bsmim,
+                 overall_bsmiminvunif,
+                 overall_bkmr,
+                 overall_bkmrinvunif,
+                 overall_km,
+                 overall_kmhier)
+overall <- round(overall,3)
+rownames(overall) <- c("QGComp",
+                       "QGComp2",
+                       "SIMlinear",
+                       "SIM",
+                       "SIMinvunif",
+                       "MIM",
+                       "MIMinvunif",
+                       "BKMR",
+                       "BKMRinvunif",
+                       "KM",
+                       "KM+HIER")
+
+kable(overall,caption="Overall Effect" ,booktabs = T)
+
+
+print(xtable(overall,digits = 3))
+```
+
+
+
+```{r univariate, echo=FALSE, fig.height=3, fig.width=7, warning=FALSE}
+ylim <- c(-0.5,0.75)
+pp_SIM <- plot_univar_hnew2(mods$SIM$pred_assoc,assoc=F,ylims=ylim)
+pp_bsmim <- plot_univar_hnew2(mods$bsmim$pred_assoc,assoc=F,ylims=ylim)
+pp_km <- vector(mode = "list", length = 18)
+vid=1
+for(vv in unique(mods$km$pred_assoc$variable)){
+  xlim <- c(min(mods$bkmr$pred_assoc$grid[[vid]]),max(mods$bkmr$pred_assoc$grid[[vid]]))
+  df <- mods$km$pred_assoc[mods$km$pred_assoc$variable==vv,]
+  # df <- df[df$z>=xlim[1] & df$z<xlim[2],]
+  # df$est <- scale(df$est,scale=F)+mean(mods$bkmr$pred_assoc$fits$mean[(vid-1)*20+(1:20)])
+  pp_km[[vid]] <- ggplot(df, aes(z, est)) + 
+        geom_line(linetype=3)+ ## 3 is dotted
+        geom_ribbon(aes(ymin=est - 1.96*se,ymax=est + 1.96*se),alpha=0.2)+
+        ylim(ylim[1],ylim[2])+
+        xlim(xlim[1],xlim[2])+
+        ylab("Estimated exposure-response (h)")+
+        xlab("Exposure Component")+
+        ggtitle(paste("Component",vid))+
+        theme_bw() +
+        theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) 
+  vid <- vid+1
+}
+
+pp15 <- pp_km[[15]]+pp_SIM[[1]][[15]]+pp_bsmim[[3]][[5]]+plot_annotation(tag_levels = "A")
+ggsave("Results/Plots/pp15.pdf",plot=pp15,width=12,height=5,units="in")
+pp15
+```
+
+```{r indexwise, echo=FALSE, fig.height=3, fig.width=7, warning=FALSE}
+pp_SIM_ind <- plot_univar_hnew_indexwise2(mods$SIM$pred_ind)
+ggsave("Results/Plots/pp_ind1.pdf",plot=pp_SIM_ind[[1]],width=5,height=5,units="in")
+
+
+pp_bsmim_ind <- plot_univar_hnew_indexwise2(mods$bsmim$pred_ind)
+
+pp_ind <- pp_bsmim_ind[[1]]+pp_bsmim_ind[[2]]+pp_bsmim_ind[[3]]
+ggsave("Results/Plots/pp_ind3.pdf",plot=pp_ind,width=12,height=5,units="in")
+pp_ind
+```
+
+```{r bkmr_grid, echo=FALSE, fig.height=9, fig.width=9, warning=FALSE}
+
+pp_inter_bkmr <- ggplot(mods$km$pred_inter, aes(z1, est)) + 
+    geom_smooth(aes(col = quantile), stat = "identity",fill="white") + 
+    scale_colour_ghibli_d("LaputaMedium",-1)+
+    facet_grid(variable2 ~ variable1)+#, scales = "free_x") +
+    lims(x=c(-4,4),y=c(-0.5,0.5))+
+    ggtitle("h(expos1 | quantiles of expos2)") +
+  labs(x="",y="",col="Quantile")+
+  theme(strip.text = element_text(colour = 'black'))+
+  theme_light()
+ggsave("Results/Plots/pp_inter_bkmr.pdf",plot=pp_inter_bkmr,width=13,height=13,units="in")
+pp_inter_bkmr
+
+
+```
+
+
+
+```{r bsmim_grid, echo=FALSE, fig.height=3, fig.width=3.5, warning=FALSE}
+
+
+pp_inter_bsmim <- ggplot(mods$bsmim$pred_inter, aes(grid, est)) + 
+  geom_smooth(aes(col = as.factor(quantile)), stat = "identity",fill="white") + 
+  scale_colour_ghibli_d("LaputaMedium",-1)+
+  # scale_color_manual(values=wes_palette(n=3, name="GrandBudapest"))+
+  facet_grid(var2 ~ var1, scales = "free_x") + ## free_x allows different x axis limits
+  ggtitle("Indexwise Interactions") + 
+  labs(x="",y="",col="Quantile")+
+  theme(strip.text = element_text(colour = 'black'))+
+  theme_light()
+# theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ggsave("Results/Plots/pp_inter_bsmim.pdf",plot=pp_inter_bsmim,width=7,height=7,units="in")
+pp_inter_bsmim
+  
+```
+
+
+
+```{r MSE, echo=FALSE, warning=FALSE}
+
+mse <- bias <- var <- c()
+for(mm in 1:length(mod_names)){
+  pred_diff <- c()
+  for(vv in 1:5){
+    if(mod_names[mm] %in% c("qgcomp","qgcomp2")){
+      pred_TEST <- CVmods[[mm]][[vv]]$pred_TEST
+    }else if(mod_names[mm] %in% c("km","kmhier")){
+      pred_TEST <- CVmods[[mm]][[vv]]$pred_TEST[,1]
+    }else {
+      pred_TEST <- CVmods[[mm]][[vv]]$pred_TEST$pred_out$mean
+    }
+    pred_diff <- c(pred_diff,(pred_TEST-CVmods[[mm]][[vv]]$y_TEST))
+    
+  }
+  bias <- c(bias,mean((pred_diff)))
+  var <- c(var,var((pred_diff)))
+  mse <- c(mse,mean((pred_diff)^2))
+}
+names(mse) <- names(bias) <- names(var) <- mod_names
+
+xtable(data.frame(mse),dig=3)
+```
+
