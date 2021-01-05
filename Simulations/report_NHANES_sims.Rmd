@@ -1,0 +1,827 @@
+---
+title: "Simulation A2"
+author: "Glen McGee"
+date: "02/11/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+### load libraries
+library(bsmim2)
+library(BSMIM)
+library(bkmr)
+library(GIGrvg)
+library(refund)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(splines)
+library(MASS)
+library(patchwork)
+library(ghibli)
+library(ggthemes)
+library(kableExtra)
+library(xtable)
+
+
+#loads an RData file, and returns it with new name
+loadRData <- function(fileName){
+    load(fileName)
+    get(ls()[ls() != "fileName"])
+}
+
+## exposure names
+exp_names <- c("PCB074","PCB099","PCB138","PCB153","PCB170","PCB180","PCB187","PCB194","PCB126","PCB169","PCB118","Dioxin1","Dioxin2","Dioxin3","Furan1","Furan2","Furan3","Furan4")
+
+
+```
+
+
+
+```{r functions, echo=FALSE}
+
+
+printCI <- function(df,col1,col2,dig=2){
+  
+  CI <- paste0("(",round(df[,col1],dig),", ",round(df[,col2],dig),")")
+  res <- CI
+  if(col1>1){
+    res <- cbind(df[1:(col1-1)],CI)
+  }
+  if(col2<ncol(df)){
+    res <- cbind(res,df[(col2+1):ncol(df)])
+  }
+  return(res)
+}
+
+getqgcWeights <- function(obj,nexp=8){
+  coefs <- obj$fit$coef[1+(1:nexp)] #exclude intercept
+  pos.weights <- coefs/sum(coefs[coefs>=0])
+  neg.weights <- coefs/sum(coefs[coefs<0])
+  weights <- cbind(pos.weights,neg.weights)
+  weights[coefs<0,1] <- NA
+  weights[coefs>=0,2] <- NA
+  return(weights)
+}
+
+
+summarizeA_results <- function(suffix="simA2_n300_sd005",path="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimA2/",mod_names=c("SIM","bsmim","bkmr","km","qgcomp","qgcomp2"),niter=100,nexp=18,skip=c(201)){
+  
+  MSE <- MSE_h <- cor_h <- hbeta0 <- hbeta1 <- empSE <- meanSE <- cvg <- CVmse <- PIPs <- c()
+  pred <- vector(mode = "list", length = nexp)
+  for(mod in mod_names){ 
+    
+    MSE_ii <- MSE_h_ii <- cor_h_ii <- hbeta0_ii <- hbeta1_ii <- empSE_ii <- meanSE_ii <- cvg_ii <- CVmse_ii <- PIPs_ii <- c()
+    pred_ii <- vector(mode = "list", length = nexp)
+    for(ii in (1:niter)[-skip]){
+      
+      ## load data
+      mod_list <- loadRData(paste0(path,mod,"_list_",suffix,"_iter",ii,".RData"))
+      ## MSE for h
+      MSE_h_ii <- c(MSE_h_ii,mean((mod_list$pred_TEST$fits$mean-mod_list$h_TEST)^2))
+      ## MSE for y
+      if(mod%in%c("qgcomp","qgcomp2")){
+        MSE_ii <- c(MSE_ii,mean((mod_list$pred_TEST$mean_fitted$mean-mod_list$y_TEST)^2))
+      }else{
+        MSE_ii <- c(MSE_ii,mean((mod_list$pred_TEST$mean_fitted-mod_list$y_TEST)^2))
+      }
+      ## MSE for cross validation
+      CVmse_ii <- c(CVmse_ii,mod_list$CV$mse_out)
+      ## cor for h
+      cor_h_ii <- c(cor_h_ii,cor(mod_list$pred_TEST$fits$mean,mod_list$h_TEST))
+      ## regression on hhat
+      hreg <- lm(mod_list$h_TEST~mod_list$pred_TEST$fits$mean)
+      hbeta0_ii <- c(hbeta0_ii,hreg$coef[1])
+      hbeta1_ii <- c(hbeta1_ii,hreg$coef[2])
+      ## empirical SE (need to take SD over simulations for each i, and then average over observations)
+      empSE_ii <- rbind(empSE_ii,mod_list$pred_TEST$fits$mean)
+      ## model based SE (need to take average over simulations and observations)
+      meanSE_ii <- rbind(meanSE_ii,mod_list$pred_TEST$fits$sd)
+      ## coverage
+      cvg_ii <- c(cvg_ii,mean((mod_list$h_TEST>=mod_list$pred_TEST$fits$mean-1.96*mod_list$pred_TEST$fits$sd)&(mod_list$h_TEST<=mod_list$pred_TEST$fits$mean+1.96*mod_list$pred_TEST$fits$sd))  )
+      ## PIPs
+      if(mod %in% c("qgcomp","qgcomp2","qgcomp3")){
+        PIPs_ii <- NULL
+      }else if(mod %in% c("km","kmhier")){
+        PIPs_ii <- rbind(PIPs_ii,apply(mod_list$fit$r[sel,],2,function(x) mean(x!=0)))
+      }else{
+        if(mod %in% c("bkmr")){
+          PIPs_ii <- rbind(PIPs_ii,apply(mod_list$fit$rho,2,function(x) mean(x!=0)))
+        }else{
+          temp <- summarize_thetas(mod_list$fit)
+          tempvec <- c()
+          for(jj in 1:length(temp)){
+            tempvec <- c(tempvec,temp[[jj]]$PIP_RHO*temp[[jj]]$PIP)
+          }
+          PIPs_ii <- rbind(PIPs_ii,tempvec)
+        }
+      }
+      
+
+      ## curves to be plotted
+      if(mod=="SIM"){
+        for(jj in 1:nexp){
+          pred_ii[[jj]] <- rbind(pred_ii[[jj]],
+                                 cbind(ii, # iter
+                                       mod_list$pred50$grid[[1]][(20*(jj-1))+(1:20),jj], #grid
+                                       mod_list$h50[(20*(jj-1))+(1:20)],#scale(mod_list$h50[(20*(jj-1))+(1:20)],scale=F), # iter
+                                       mod_list$pred50$fits$mean[(20*(jj-1))+(1:20)])) #scale(mod_list$pred50$fits$mean[(20*(jj-1))+(1:20)],scale=F))) ### scale=F just centers the data
+        }
+      }else{
+        for(jj in 1:nexp){
+          pred_ii[[jj]] <- c(pred_ii[[jj]],mod_list$pred50$fits$mean[(20*(jj-1))+(1:20)] )
+        } ## loop over jj
+      } ## else
+      
+      
+    } ## loop over ii
+    
+    for(jj in 1:nexp){
+      pred[[jj]] <- cbind(pred[[jj]], pred_ii[[jj]] ) ### scale=F just centers the data
+    }
+    
+
+    ## collect results
+    MSE <- cbind(MSE,MSE_ii)
+    MSE_h <- cbind(MSE_h,MSE_h_ii)
+    cor_h <- cbind(cor_h,cor_h_ii)
+    hbeta0 <- cbind(hbeta0,hbeta0_ii)
+    hbeta1 <- cbind(hbeta1,hbeta1_ii)
+    empSE <- c(empSE,mean(apply(empSE_ii,2,sd)))
+    meanSE <- c(meanSE,mean(apply(meanSE_ii,2,mean)))
+    cvg <- c(cvg,mean(cvg_ii))
+    CVmse <- cbind(CVmse,CVmse_ii)
+    if(!(mod %in% c("qgcomp","qgcomp2","qgcomp3"))){
+      PIPs <- cbind(PIPs,apply(PIPs_ii,2,mean))
+    }
+    
+    
+  } ## loop over mods
+  colnames(MSE) <- colnames(MSE_h) <- colnames(cor_h) <- colnames(hbeta0) <- colnames(hbeta1) <- colnames(CVmse) <- names(empSE) <- names(meanSE) <- names(cvg) <- mod_names
+  colnames(PIPs) <- mod_names[which(!(mod_names %in% c("qgcomp","qgcomp2","qgcomp3")))]
+  rownames(PIPs) <- exp_names
+  for(jj in 1:nexp){
+    pred[[jj]] <- data.frame(pred[[jj]]) ### scale=F just centers the data
+    colnames(pred[[jj]]) <- c("iter","grid","true",mod_names)
+  }
+
+  
+  res <- list(MSE=MSE,MSE_h=MSE_h,cor_h=cor_h,hbeta0=hbeta0,hbeta1=hbeta1,CVmse=CVmse,PIPs=PIPs,empSE=empSE,meanSE=meanSE,cvg=cvg,pred=pred,mod_names=mod_names,nexp=nexp) 
+  return(res)
+}
+
+
+make_restab <- function(res){
+  
+tab <- cbind(apply(res$MSE_h,2,mean),
+             apply(res$MSE_h,2,sd),
+             apply(res$cor_h,2,mean),
+            apply(res$hbeta0,2,mean),
+            apply(res$hbeta1,2,mean),
+            res$empSE,
+            res$meanSE,
+            res$cvg,
+            apply(res$MSE,2,mean),
+            apply(res$MSE,2,sd),
+            apply(res$CVmse,2,mean),
+            apply(res$CVmse,2,sd))
+colnames(tab) <- c("MSE(h)","SE[MSE(h)]","cor(h)","Int(h)","Slope(h)","EmpSD","AvgSE","PctCvg","MSE(Y)","SE[MSE(Y)]","CV-MSE(Y)","SE[CV-MSE(Y)]")
+return(tab)
+
+}
+
+
+plot_curves <- function(res,ylims=c(-0.5,0.5),alph=0.2,clr="#E2D200"){
+  pred <- res$pred
+  
+  plots <- list()
+  mm <- 1
+  for(mod in res$mod_names){ 
+    pp <- vector(mode = "list", length = 18)
+    
+    for(jj in 1:res$nexp){
+      dfmat <- pred[[jj]]
+      dfmat$y <- dfmat[,mod]
+      pp[[jj]] <- ggplot(data=dfmat,aes(y=y,x=grid,group=iter))+
+        theme_classic() +
+        ylim(ylims[1],ylims[2])+
+        labs(x="Exposure", y="Response (Centered)")+
+        ggtitle(paste0(mod," - Exposure ",jj))
+       if(mod %in% c("qgcomp","qgcomp2","qgcomp3")){
+          pp[[jj]] <- pp[[jj]]+geom_point(alpha=alph)
+        }else{
+          pp[[jj]] <- pp[[jj]]+geom_line(alpha=alph)
+        }
+        pp[[jj]] <- pp[[jj]]+geom_line(aes(y=true,x=grid),col=clr,lty=2,lwd=1.1)
+      
+    }
+    plots[[mm]] <- pp
+    mm <- mm+1
+  }
+  names(plots) <- res$mod_names
+  return(plots)
+}
+
+```
+
+
+
+
+
+
+
+```{r simA2_n300_sd005, echo=FALSE, message=FALSE, warning=FALSE}
+pathA2="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimA2/"
+simA2_n300_sd005 <- summarizeA_results(suffix="simA2_n300_sd005",path=pathA2,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(201),niter=100,nexp=18)
+
+
+```
+
+```{r simA2_n300_sd005_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simA2_n300_sd005,ylims=c(-0.25,1.8))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simA2_n300_sd005_tab, echo=FALSE, warning=FALSE}
+
+tab_simA2_n300_sd005 <- make_restab(simA2_n300_sd005)
+xtable(tab_simA2_n300_sd005,dig=2)
+xtable(tab_simA2_n300_sd005[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simA2_n300_sd005_box, echo=FALSE, warning=FALSE}
+
+boxplot(simA2_n300_sd005$MSE_h)
+boxplot(simA2_n300_sd005$MSE)
+boxplot(simA2_n300_sd005$CVmse)
+boxplot(simA2_n300_sd005$hbeta0);abline(h=0)
+boxplot(simA2_n300_sd005$hbeta1);abline(h=1)
+boxplot(simA2_n300_sd005$cor_h)
+
+
+
+
+```
+
+
+
+```{r simA2_n300_sd005_PIPs, echo=FALSE, warning=FALSE}
+xtable(simA2_n300_sd005$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+```{r simA2_n300_sd01, echo=FALSE, message=FALSE, warning=FALSE}
+pathA2="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimA2/"
+simA2_n300_sd01 <- summarizeA_results(suffix="simA2_n300_sd01",path=pathA2,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(201),niter=100,nexp=18)
+
+
+```
+
+```{r simA2_n300_sd01_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simA2_n300_sd01,ylims=c(-0.25,1.8))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simA2_n300_sd01_tab, echo=FALSE, warning=FALSE}
+
+tab_simA2_n300_sd01 <- make_restab(simA2_n300_sd01)
+xtable(tab_simA2_n300_sd01,dig=2)
+xtable(tab_simA2_n300_sd01[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simA2_n300_sd01_box, echo=FALSE, warning=FALSE}
+
+boxplot(simA2_n300_sd01$MSE_h)
+boxplot(simA2_n300_sd01$MSE)
+boxplot(simA2_n300_sd01$CVmse)
+boxplot(simA2_n300_sd01$hbeta0);abline(h=0)
+boxplot(simA2_n300_sd01$hbeta1);abline(h=1)
+boxplot(simA2_n300_sd01$cor_h)
+
+
+
+
+```
+
+
+
+```{r simA2_n300_sd01_PIPs, echo=FALSE, warning=FALSE}
+xtable(simA2_n300_sd01$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+```{r simA2_n300_sd02, echo=FALSE, message=FALSE, warning=FALSE}
+pathA2="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimA2/"
+simA2_n300_sd02 <- summarizeA_results(suffix="simA2_n300_sd02",path=pathA2,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(201),niter=100,nexp=18)
+
+
+```
+
+```{r simA2_n300_sd02_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simA2_n300_sd02,ylims=c(-0.25,1.8))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simA2_n300_sd02_tab, echo=FALSE, warning=FALSE}
+
+tab_simA2_n300_sd02 <- make_restab(simA2_n300_sd02)
+xtable(tab_simA2_n300_sd02,dig=2)
+xtable(tab_simA2_n300_sd02[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simA2_n300_sd02_box, echo=FALSE, warning=FALSE}
+
+boxplot(simA2_n300_sd02$MSE_h)
+boxplot(simA2_n300_sd02$MSE)
+boxplot(simA2_n300_sd02$CVmse)
+boxplot(simA2_n300_sd02$hbeta0);abline(h=0)
+boxplot(simA2_n300_sd02$hbeta1);abline(h=1)
+boxplot(simA2_n300_sd02$cor_h)
+
+
+
+
+```
+
+
+
+```{r simA2_n300_sd02_PIPs, echo=FALSE, warning=FALSE}
+xtable(simA2_n300_sd02$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r simB_n300_sd005, echo=FALSE, message=FALSE, warning=FALSE}
+pathB="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimB/"
+simB_n300_sd005 <- summarizeA_results(suffix="simB_n300_sd005",path=pathB,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(201),niter=100,nexp=18)
+
+
+```
+
+```{r simB_n300_sd005_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simB_n300_sd005,ylims=c(0,2.5))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simB_n300_sd005_tab, echo=FALSE, warning=FALSE}
+
+tab_simB_n300_sd005 <- make_restab(simB_n300_sd005)
+xtable(tab_simB_n300_sd005,dig=2)
+xtable(tab_simB_n300_sd005[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simB_n300_sd005_box, echo=FALSE, warning=FALSE}
+
+boxplot(simB_n300_sd005$MSE_h)
+boxplot(simB_n300_sd005$MSE)
+boxplot(simB_n300_sd005$CVmse)
+boxplot(simB_n300_sd005$hbeta0);abline(h=0)
+boxplot(simB_n300_sd005$hbeta1);abline(h=1)
+boxplot(simB_n300_sd005$cor_h)
+
+```
+
+
+
+```{r simB_n300_sd005_PIPs, echo=FALSE, warning=FALSE}
+xtable(simB_n300_sd005$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+```{r simB_n300_sd01, echo=FALSE, message=FALSE, warning=FALSE}
+pathB="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimB/"
+simB_n300_sd01 <- summarizeA_results(suffix="simB_n300_sd01",path=pathB,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(201),niter=100,nexp=18)
+
+
+```
+
+```{r simB_n300_sd01_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simB_n300_sd01,ylims=c(0,2.5))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simB_n300_sd01_tab, echo=FALSE, warning=FALSE}
+
+tab_simB_n300_sd01 <- make_restab(simB_n300_sd01)
+xtable(tab_simB_n300_sd01,dig=2)
+xtable(tab_simB_n300_sd01[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simB_n300_sd01_box, echo=FALSE, warning=FALSE}
+
+boxplot(simB_n300_sd01$MSE_h)
+boxplot(simB_n300_sd01$MSE)
+boxplot(simB_n300_sd01$CVmse)
+boxplot(simB_n300_sd01$hbeta0);abline(h=0)
+boxplot(simB_n300_sd01$hbeta1);abline(h=1)
+boxplot(simB_n300_sd01$cor_h)
+
+```
+
+
+
+```{r simB_n300_sd01_PIPs, echo=FALSE, warning=FALSE}
+xtable(simB_n300_sd01$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+```{r simB_n300_sd02, echo=FALSE, message=FALSE, warning=FALSE}
+pathB="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimB/"
+simB_n300_sd02 <- summarizeA_results(suffix="simB_n300_sd02",path=pathB,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(66),niter=100,nexp=18)
+
+
+```
+
+```{r simB_n300_sd02_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simB_n300_sd02,ylims=c(0,2.5))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simB_n300_sd02_tab, echo=FALSE, warning=FALSE}
+
+tab_simB_n300_sd02 <- make_restab(simB_n300_sd02)
+xtable(tab_simB_n300_sd02,dig=2)
+xtable(tab_simB_n300_sd02[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simB_n300_sd02_box, echo=FALSE, warning=FALSE}
+
+boxplot(simB_n300_sd02$MSE_h)
+boxplot(simB_n300_sd02$MSE)
+boxplot(simB_n300_sd02$CVmse)
+boxplot(simB_n300_sd02$hbeta0);abline(h=0)
+boxplot(simB_n300_sd02$hbeta1);abline(h=1)
+boxplot(simB_n300_sd02$cor_h)
+
+```
+
+
+
+```{r simB_n300_sd02_PIPs, echo=FALSE, warning=FALSE}
+xtable(simB_n300_sd02$PIPs,2)
+```
+
+
+
+
+
+
+
+```{r sim_tables, echo=FALSE, warning=FALSE}
+
+
+xtable(tab_simA2_n300_sd005[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+xtable( tab_simA2_n300_sd01[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+xtable( tab_simA2_n300_sd02[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+xtable( tab_simB_n300_sd005[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+xtable(  tab_simB_n300_sd01[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+xtable(  tab_simB_n300_sd02[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+
+```
+
+
+```{r sim_tables_supp, echo=FALSE, warning=FALSE}
+
+
+xtable(tab_simA1_n300_sd005,dig=2)
+xtable(tab_simA1_n300_sd01,dig=2)
+xtable(tab_simA1_n300_sd02,dig=2)
+xtable( tab_simB_n300_sd005,dig=2)
+xtable( tab_simB_n300_sd01,dig=2)
+xtable( tab_simB_n300_sd02,dig=2)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r simA1_n300_sd005, echo=FALSE, message=FALSE, warning=FALSE}
+pathA1="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimA1/"
+simA1_n300_sd005 <- summarizeA_results(suffix="simA1_n300_sd005",path=pathA1,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(201),niter=100,nexp=18)
+
+
+```
+
+```{r simA1_n300_sd005_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simA1_n300_sd005,ylims=c(-0.25,1.8))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simA1_n300_sd005_tab, echo=FALSE, warning=FALSE}
+
+tab_simA1_n300_sd005 <- make_restab(simA1_n300_sd005)
+xtable(tab_simA1_n300_sd005,dig=2)
+xtable(tab_simA1_n300_sd005[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simA1_n300_sd005_box, echo=FALSE, warning=FALSE}
+
+boxplot(simA1_n300_sd005$MSE_h)
+boxplot(simA1_n300_sd005$MSE)
+boxplot(simA1_n300_sd005$CVmse)
+boxplot(simA1_n300_sd005$hbeta0);abline(h=0)
+boxplot(simA1_n300_sd005$hbeta1);abline(h=1)
+boxplot(simA1_n300_sd005$cor_h)
+
+
+
+
+```
+
+
+
+```{r simA1_n300_sd005_PIPs, echo=FALSE, warning=FALSE}
+xtable(simA1_n300_sd005$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+```{r simA1_n300_sd01, echo=FALSE, message=FALSE, warning=FALSE}
+pathA1="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimA1/"
+simA1_n300_sd01 <- summarizeA_results(suffix="simA1_n300_sd01",path=pathA1,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(16,41),niter=100,nexp=18)
+
+
+```
+
+```{r simA1_n300_sd01_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simA1_n300_sd01,ylims=c(-0.25,1.8))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simA1_n300_sd01_tab, echo=FALSE, warning=FALSE}
+
+tab_simA1_n300_sd01 <- make_restab(simA1_n300_sd01)
+xtable(tab_simA1_n300_sd01,dig=2)
+xtable(tab_simA1_n300_sd01[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simA1_n300_sd01_box, echo=FALSE, warning=FALSE}
+
+boxplot(simA1_n300_sd01$MSE_h)
+boxplot(simA1_n300_sd01$MSE)
+boxplot(simA1_n300_sd01$CVmse)
+boxplot(simA1_n300_sd01$hbeta0);abline(h=0)
+boxplot(simA1_n300_sd01$hbeta1);abline(h=1)
+boxplot(simA1_n300_sd01$cor_h)
+
+
+
+
+```
+
+
+
+```{r simA1_n300_sd01_PIPs, echo=FALSE, warning=FALSE}
+xtable(simA1_n300_sd01$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+```{r simA1_n300_sd02, echo=FALSE, message=FALSE, warning=FALSE}
+pathA1="~/Dropbox/Glen Brent PostDoc/Environmental Mixtures/Code/Final Simulations/Results/SimA1/"
+simA1_n300_sd02 <- summarizeA_results(suffix="simA1_n300_sd02",path=pathA1,mod_names=c("SIM","bsmim","bkmr","km","kmhier","qgcomp","qgcomp2","SIMlinear"),skip=c(21),niter=100,nexp=18)
+
+
+```
+
+```{r simA1_n300_sd02_plots, echo=FALSE, fig.height=1, fig.width=3, message=FALSE, warning=FALSE}
+pp <- plot_curves(simA1_n300_sd02,ylims=c(-0.25,1.8))
+
+plots <- list()
+for(jj in 1:18){
+    plots[[jj]] <- pp$SIM[[jj]]+pp$bsmim[[jj]]+pp$bkmr[[jj]]
+}
+plots
+
+
+```
+
+```{r simA1_n300_sd02_tab, echo=FALSE, warning=FALSE}
+
+tab_simA1_n300_sd02 <- make_restab(simA1_n300_sd02)
+xtable(tab_simA1_n300_sd02,dig=2)
+xtable(tab_simA1_n300_sd02[,c(1,2,8:12)],dig=2)
+
+```
+
+```{r simA1_n300_sd02_box, echo=FALSE, warning=FALSE}
+
+boxplot(simA1_n300_sd02$MSE_h)
+boxplot(simA1_n300_sd02$MSE)
+boxplot(simA1_n300_sd02$CVmse)
+boxplot(simA1_n300_sd02$hbeta0);abline(h=0)
+boxplot(simA1_n300_sd02$hbeta1);abline(h=1)
+boxplot(simA1_n300_sd02$cor_h)
+
+
+
+
+```
+
+
+
+```{r simA1_n300_sd02_PIPs, echo=FALSE, warning=FALSE}
+xtable(simA1_n300_sd02$PIPs,2)
+```
+
+
+
+
+
+
+
+
+
+
+```{r sim_tables_A1, echo=FALSE, warning=FALSE}
+
+
+xtable(tab_simA1_n300_sd005[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+xtable( tab_simA1_n300_sd01[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+xtable( tab_simA1_n300_sd02[,c(1,2,7,8:12)],dig=c(0,3,3,2,2,2,2,2,2))
+
+```
+
+
+```{r sim_tables_supp_A1, echo=FALSE, warning=FALSE}
+
+
+xtable(tab_simA1_n300_sd005,dig=2)
+xtable(tab_simA1_n300_sd01,dig=2)
+xtable(tab_simA1_n300_sd02,dig=2)
+
+```
+
+
