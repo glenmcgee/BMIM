@@ -1,12 +1,12 @@
 # BMIM
 Code to run simulations and analysis for "Bayesian Multiple Index Models for Environmental Mixtures"
-- bsmim2.R: contains main function bsmim2() for fitting BMIMs
-- bsmim_predict2.R: contains functions for predicting response surface
-- plot_univar_hnew2.R: contains functions for plotting exposure response curves (componentwise and indexwise)
 
 ## Functions
 ### bsmim2
 Rcpp package to fit a BMIM in R
+- bsmim2.R: contains main function bsmim2() for fitting BMIMs
+- bsmim_predict2.R: contains functions for predicting response surface
+- plot_univar_hnew2.R: contains functions for plotting exposure response curves (componentwise and indexwise)
 
 ## Simulations
 Code to replicate simulation scenarios 
