@@ -372,12 +372,6 @@ bsmim2 <- function(y,
       fit$theta[[m]][which(cmw<0),] <- -fit$theta[[m]][which(cmw<0),]
     }
 
-    # ### CHECK RESCALING:
-    # ## 1) do we need this rescaling?
-    # ## 2) ander parameterizes rho differently--I don't think it should be divided here... maybe im wrong
-    # # rescale to divide by number of exposures
-    # fit$theta[[m]] <- fit$theta[[m]]*sqrt(nrow(B[[m]]$psi))
-    # fit$rho[,m] <- fit$rho[,m]*sqrt(nrow(B[[m]]$psi)) ## also ander parameterizes rho differently I think so i doubt we would divide here
   
     ## w
     fit$w[[m]] <- fit$theta[[m]]%*%t(B[[m]]$psi)
